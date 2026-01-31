@@ -20,7 +20,7 @@ st.caption("TensorFlow + Streamlit | Negatif • Netral • Positif")
 # =========================
 @st.cache_data
 def load_data():
-    return pd.read_csv("data.csv")
+    return pd.read_csv("Dataset_Scrapping_raw.csv")
 
 df = load_data()
 
