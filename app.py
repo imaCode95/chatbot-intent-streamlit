@@ -1,196 +1,169 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+import re
+import nltk
+import numpy as np
+
+from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.naive_bayes import MultinomialNB
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, classification_report
 
-# =========================
-# KONFIGURASI HALAMAN
-# =========================
-st.set_page_config(
-    page_title="Chatbot Layanan Publik",
-    page_icon="🤖",
-    layout="centered"
-)
+from sklearn.svm import LinearSVC
+import tensorflow as tf
+import tensorflow_decision_forests as tfdf
 
-# =========================
-# DATABASE SQLITE
-# =========================
-conn = sqlite3.connect("users.db", check_same_thread=False)
-c = conn.cursor()
+nltk.download("stopwords")
+from nltk.corpus import stopwords
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    username TEXT PRIMARY KEY,
-    password TEXT
-)
-""")
-conn.commit()
+# ===============================
+# CONFIG
+# ===============================
+st.set_page_config(page_title="Analisis Sentimen NLP", layout="wide")
+st.title("📊 Analisis Sentimen Review (TF-IDF & TensorFlow)")
 
-# =========================
-# SESSION STATE
-# =========================
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+# ===============================
+# LOAD DATA
+# ===============================
+@st.cache_data
+def load_data():
+    df = pd.read_csv("data.csv")
+    return df
 
-# =========================
-# DATASET NLP
-# =========================
-data = {
-    "text": [
-        "cara membuat ktp",
-        "syarat pembuatan ktp",
-        "daftar bpjs",
-        "cara daftar bpjs kesehatan",
-        "cek bantuan sosial",
-        "syarat bansos",
-        "jam buka kelurahan",
-        "kantor buka jam berapa"
-    ],
-    "intent": [
-        "ktp",
-        "ktp",
-        "bpjs",
-        "bpjs",
-        "bansos",
-        "bansos",
-        "jam_kantor",
-        "jam_kantor"
+df = load_data()
+st.subheader("📁 Dataset")
+st.dataframe(df.head())
+
+# ===============================
+# LABELING SENTIMEN
+# ===============================
+def label_sentiment(rating):
+    if rating <= 2:
+        return "negatif"
+    elif rating == 3:
+        return "netral"
+    else:
+        return "positif"
+
+df["sentiment"] = df["rating"].apply(label_sentiment)
+
+# ===============================
+# PREPROCESSING
+# ===============================
+stop_words = stopwords.words("indonesian")
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"[^a-z\s]", "", text)
+    text = " ".join([w for w in text.split() if w not in stop_words])
+    return text
+
+df["clean_text"] = df["content"].apply(clean_text)
+
+# ===============================
+# ENCODE LABEL
+# ===============================
+le = LabelEncoder()
+df["label"] = le.fit_transform(df["sentiment"])
+
+# ===============================
+# PILIH SKEMA
+# ===============================
+st.subheader("⚙️ Skema Pelatihan")
+
+skema = st.selectbox(
+    "Pilih Skema",
+    [
+        "SVM + TF-IDF + Split 80/20",
+        "Random Forest (TF) + Embedding + Split 80/20",
+        "SVM + TF-IDF + Split 70/30"
     ]
-}
+)
 
-df = pd.DataFrame(data)
+# ===============================
+# TRAINING
+# ===============================
+if st.button("🚀 Jalankan Training"):
+    if "80/20" in skema:
+        test_size = 0.2
+    else:
+        test_size = 0.3
 
-# =========================
-# MODEL NLP
-# =========================
-vectorizer = TfidfVectorizer()
-X = vectorizer.fit_transform(df["text"])
-y = df["intent"]
-
-model = MultinomialNB()
-model.fit(X, y)
-
-def predict_intent(text):
-    text_vec = vectorizer.transform([text])
-    return model.predict(text_vec)[0]
-
-# =========================
-# RESPON CHATBOT
-# =========================
-responses = {
-    "ktp": "📄 Untuk membuat KTP, silakan datang ke Disdukcapil dengan membawa KK.",
-    "bpjs": "🏥 Pendaftaran BPJS bisa melalui aplikasi Mobile JKN.",
-    "bansos": "🆘 Bantuan sosial diberikan kepada warga yang terdaftar di DTKS.",
-    "jam_kantor": "⏰ Kantor pelayanan buka Senin–Jumat pukul 08.00–15.00"
-}
-
-# =========================
-# FUNGSI LOGIN
-# =========================
-def register_user(username, password):
-    try:
-        c.execute("INSERT INTO users VALUES (?,?)", (username, password))
-        conn.commit()
-        return True
-    except:
-        return False
-
-def login_user(username, password):
-    c.execute(
-        "SELECT * FROM users WHERE username=? AND password=?",
-        (username, password)
-    )
-    return c.fetchone() is not None
-
-# =========================
-# SIDEBAR
-# =========================
-st.sidebar.title("📌 Menu")
-
-if st.session_state.logged_in:
-    menu = st.sidebar.radio(
-        "Pilih Halaman",
-        ["🤖 Chatbot", "ℹ️ Tentang", "🧾 Layanan"]
+    X_train, X_test, y_train, y_test = train_test_split(
+        df["clean_text"],
+        df["label"],
+        test_size=test_size,
+        random_state=42,
+        stratify=df["label"]
     )
 
-    st.sidebar.write(f"👤 Login sebagai **{st.session_state.username}**")
+    # ===========================
+    # SKEMA 1 & 3 (SVM + TF-IDF)
+    # ===========================
+    if "TF-IDF" in skema:
+        tfidf = TfidfVectorizer(max_features=5000)
+        X_train_vec = tfidf.fit_transform(X_train)
+        X_test_vec = tfidf.transform(X_test)
 
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state.logged_in = False
-        st.rerun()
-else:
-    menu = st.sidebar.radio(
-        "Pilih Halaman",
-        ["🔐 Login", "📝 Sign Up"]
-    )
+        model = LinearSVC()
+        model.fit(X_train_vec, y_train)
 
-# =========================
-# LOGIN & SIGN UP PAGE
-# =========================
-if not st.session_state.logged_in:
+        train_acc = model.score(X_train_vec, y_train)
+        test_acc = accuracy_score(y_test, model.predict(X_test_vec))
 
-    if menu == "🔐 Login":
-        st.title("🔐 Login")
+        st.success("Training selesai!")
+        st.write(f"🎯 Akurasi Training: **{train_acc:.4f}**")
+        st.write(f"🧪 Akurasi Testing: **{test_acc:.4f}**")
 
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        st.text("Classification Report")
+        st.text(classification_report(y_test, model.predict(X_test_vec), target_names=le.classes_))
 
-        if st.button("Login"):
-            if login_user(username, password):
-                st.session_state.logged_in = True
-                st.session_state.username = username
-                st.success("Login berhasil")
-                st.rerun()
-            else:
-                st.error("Username atau password salah")
+        st.session_state["model"] = model
+        st.session_state["vectorizer"] = tfidf
 
-    elif menu == "📝 Sign Up":
-        st.title("📝 Sign Up")
+    # ===========================
+    # SKEMA 2 (RF TensorFlow)
+    # ===========================
+    else:
+        def make_dataset(texts, labels):
+            return tf.data.Dataset.from_tensor_slices((texts, labels)).batch(32)
 
-        new_user = st.text_input("Username")
-        new_pass = st.text_input("Password", type="password")
+        train_ds = make_dataset(X_train, y_train)
+        test_ds = make_dataset(X_test, y_test)
 
-        if st.button("Daftar"):
-            if register_user(new_user, new_pass):
-                st.success("Pendaftaran berhasil, silakan login")
-            else:
-                st.warning("Username sudah digunakan")
+        model = tfdf.keras.RandomForestModel(num_trees=200)
+        model.compile(metrics=["accuracy"])
+        model.fit(train_ds)
 
-# =========================
-# HALAMAN SETELAH LOGIN
-# =========================
-if st.session_state.logged_in:
+        train_eval = model.evaluate(train_ds, verbose=0)
+        test_eval = model.evaluate(test_ds, verbose=0)
 
-    if menu == "🤖 Chatbot":
-        st.title("🤖 Chatbot Layanan Publik")
-        st.write("Silakan tanyakan informasi layanan publik.")
+        st.success("Training selesai!")
+        st.write(f"🎯 Akurasi Training: **{train_eval[1]:.4f}**")
+        st.write(f"🧪 Akurasi Testing: **{test_eval[1]:.4f}**")
 
-        user_input = st.text_input("💬 Ketik pertanyaan:")
+        st.session_state["model"] = model
+        st.session_state["vectorizer"] = None
 
-        if user_input:
-            intent = predict_intent(user_input)
-            st.success(responses[intent])
+# ===============================
+# INFERENCE
+# ===============================
+st.subheader("🧠 Inference Sentimen")
 
-    elif menu == "ℹ️ Tentang":
-        st.title("ℹ️ Tentang Aplikasi")
-        st.write("""
-        Chatbot layanan publik berbasis NLP
-        untuk membantu masyarakat mendapatkan
-        informasi layanan secara cepat dan mudah.
-        """)
+input_text = st.text_area("Masukkan teks ulasan:")
 
-    elif menu == "🧾 Layanan":
-        st.title("🧾 Daftar Layanan")
-        st.markdown("""
-        - 📄 Pembuatan KTP  
-        - 🏥 BPJS Kesehatan  
-        - 🆘 Bantuan Sosial  
-        - ⏰ Jam Operasional Kantor  
-        """)
+if st.button("🔍 Prediksi"):
+    if "model" not in st.session_state:
+        st.warning("⚠️ Jalankan training dulu")
+    else:
+        text = clean_text(input_text)
 
-# =========================
-# FOOTER
-# =========================
-st.markdown("---")
-st.caption("© 2026 Chatbot Layanan Publik | SQLite + NLP + Streamlit")
+        if st.session_state["vectorizer"] is not None:
+            vec = st.session_state["vectorizer"].transform([text])
+            pred = st.session_state["model"].predict(vec)
+        else:
+            pred = st.session_state["model"].predict(pd.Series([text]))
+
+        label = le.inverse_transform([pred[0]])[0]
+        st.success(f"📌 Hasil Sentimen: **{label.upper()}**")
