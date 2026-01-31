@@ -1,169 +1,165 @@
 import streamlit as st
 import pandas as pd
-import re
-import nltk
-import numpy as np
-
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, classification_report
-
-from sklearn.svm import LinearSVC
 import tensorflow as tf
-import tensorflow_decision_forests as tfdf
+import numpy as np
+import re
 
-nltk.download("stopwords")
-from nltk.corpus import stopwords
+# =========================
+# CONFIG STREAMLIT
+# =========================
+st.set_page_config(
+    page_title="Analisis Sentimen TensorFlow",
+    layout="centered"
+)
 
-# ===============================
-# CONFIG
-# ===============================
-st.set_page_config(page_title="Analisis Sentimen NLP", layout="wide")
-st.title("📊 Analisis Sentimen Review (TF-IDF & TensorFlow)")
+st.title("📊 Analisis Sentimen Review")
+st.caption("TensorFlow + Streamlit | Negatif • Netral • Positif")
 
-# ===============================
+# =========================
 # LOAD DATA
-# ===============================
+# =========================
 @st.cache_data
 def load_data():
-    df = pd.read_csv("data.csv")
-    return df
+    return pd.read_csv("data.csv")
 
 df = load_data()
+
 st.subheader("📁 Dataset")
 st.dataframe(df.head())
 
-# ===============================
+# =========================
 # LABELING SENTIMEN
-# ===============================
+# =========================
 def label_sentiment(rating):
     if rating <= 2:
-        return "negatif"
+        return 0   # negatif
     elif rating == 3:
-        return "netral"
+        return 1   # netral
     else:
-        return "positif"
+        return 2   # positif
 
-df["sentiment"] = df["rating"].apply(label_sentiment)
+df["label"] = df["rating"].apply(label_sentiment)
 
-# ===============================
-# PREPROCESSING
-# ===============================
-stop_words = stopwords.words("indonesian")
-
+# =========================
+# PREPROCESSING TEXT
+# =========================
 def clean_text(text):
     text = str(text).lower()
     text = re.sub(r"http\S+", "", text)
     text = re.sub(r"[^a-z\s]", "", text)
-    text = " ".join([w for w in text.split() if w not in stop_words])
     return text
 
 df["clean_text"] = df["content"].apply(clean_text)
 
-# ===============================
-# ENCODE LABEL
-# ===============================
-le = LabelEncoder()
-df["label"] = le.fit_transform(df["sentiment"])
-
-# ===============================
+# =========================
 # PILIH SKEMA
-# ===============================
+# =========================
 st.subheader("⚙️ Skema Pelatihan")
 
 skema = st.selectbox(
-    "Pilih Skema",
+    "Pilih Skema Training",
     [
-        "SVM + TF-IDF + Split 80/20",
-        "Random Forest (TF) + Embedding + Split 80/20",
-        "SVM + TF-IDF + Split 70/30"
+        "Skema 1: Dense NN + TF-IDF (80/20)",
+        "Skema 2: LSTM + Embedding (80/20)",
+        "Skema 3: Dense NN + TF-IDF (70/30)"
     ]
 )
 
-# ===============================
-# TRAINING
-# ===============================
-if st.button("🚀 Jalankan Training"):
-    if "80/20" in skema:
-        test_size = 0.2
-    else:
-        test_size = 0.3
+test_size = 0.2 if "80/20" in skema else 0.3
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        df["clean_text"],
-        df["label"],
-        test_size=test_size,
-        random_state=42,
-        stratify=df["label"]
+# =========================
+# SPLIT DATA
+# =========================
+X = df["clean_text"].values
+y = df["label"].values
+
+split_index = int(len(X) * (1 - test_size))
+X_train, X_test = X[:split_index], X[split_index:]
+y_train, y_test = y[:split_index], y[split_index:]
+
+# =========================
+# TEXT VECTORIZATION
+# =========================
+vectorizer = tf.keras.layers.TextVectorization(
+    max_tokens=5000,
+    output_sequence_length=100
+)
+vectorizer.adapt(X_train)
+
+# =========================
+# MODEL
+# =========================
+def build_dense_model():
+    model = tf.keras.Sequential([
+        vectorizer,
+        tf.keras.layers.Embedding(5000, 128),
+        tf.keras.layers.GlobalAveragePooling1D(),
+        tf.keras.layers.Dense(64, activation="relu"),
+        tf.keras.layers.Dense(3, activation="softmax")
+    ])
+    return model
+
+def build_lstm_model():
+    model = tf.keras.Sequential([
+        vectorizer,
+        tf.keras.layers.Embedding(5000, 128),
+        tf.keras.layers.LSTM(64),
+        tf.keras.layers.Dense(3, activation="softmax")
+    ])
+    return model
+
+# =========================
+# TRAINING
+# =========================
+if st.button("🚀 Jalankan Training"):
+    if "LSTM" in skema:
+        model = build_lstm_model()
+    else:
+        model = build_dense_model()
+
+    model.compile(
+        optimizer="adam",
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
     )
 
-    # ===========================
-    # SKEMA 1 & 3 (SVM + TF-IDF)
-    # ===========================
-    if "TF-IDF" in skema:
-        tfidf = TfidfVectorizer(max_features=5000)
-        X_train_vec = tfidf.fit_transform(X_train)
-        X_test_vec = tfidf.transform(X_test)
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data=(X_test, y_test),
+        epochs=10,
+        batch_size=32,
+        verbose=1
+    )
 
-        model = LinearSVC()
-        model.fit(X_train_vec, y_train)
+    train_acc = history.history["accuracy"][-1]
+    val_acc = history.history["val_accuracy"][-1]
 
-        train_acc = model.score(X_train_vec, y_train)
-        test_acc = accuracy_score(y_test, model.predict(X_test_vec))
+    st.success("✅ Training selesai")
+    st.write(f"🎯 Akurasi Training: **{train_acc:.4f}**")
+    st.write(f"🧪 Akurasi Testing: **{val_acc:.4f}**")
 
-        st.success("Training selesai!")
-        st.write(f"🎯 Akurasi Training: **{train_acc:.4f}**")
-        st.write(f"🧪 Akurasi Testing: **{test_acc:.4f}**")
+    st.session_state["model"] = model
 
-        st.text("Classification Report")
-        st.text(classification_report(y_test, model.predict(X_test_vec), target_names=le.classes_))
-
-        st.session_state["model"] = model
-        st.session_state["vectorizer"] = tfidf
-
-    # ===========================
-    # SKEMA 2 (RF TensorFlow)
-    # ===========================
-    else:
-        def make_dataset(texts, labels):
-            return tf.data.Dataset.from_tensor_slices((texts, labels)).batch(32)
-
-        train_ds = make_dataset(X_train, y_train)
-        test_ds = make_dataset(X_test, y_test)
-
-        model = tfdf.keras.RandomForestModel(num_trees=200)
-        model.compile(metrics=["accuracy"])
-        model.fit(train_ds)
-
-        train_eval = model.evaluate(train_ds, verbose=0)
-        test_eval = model.evaluate(test_ds, verbose=0)
-
-        st.success("Training selesai!")
-        st.write(f"🎯 Akurasi Training: **{train_eval[1]:.4f}**")
-        st.write(f"🧪 Akurasi Testing: **{test_eval[1]:.4f}**")
-
-        st.session_state["model"] = model
-        st.session_state["vectorizer"] = None
-
-# ===============================
+# =========================
 # INFERENCE
-# ===============================
+# =========================
 st.subheader("🧠 Inference Sentimen")
 
 input_text = st.text_area("Masukkan teks ulasan:")
 
 if st.button("🔍 Prediksi"):
     if "model" not in st.session_state:
-        st.warning("⚠️ Jalankan training dulu")
+        st.warning("⚠️ Jalankan training terlebih dahulu")
     else:
-        text = clean_text(input_text)
+        cleaned = clean_text(input_text)
+        pred = st.session_state["model"].predict([cleaned])
+        label = np.argmax(pred)
 
-        if st.session_state["vectorizer"] is not None:
-            vec = st.session_state["vectorizer"].transform([text])
-            pred = st.session_state["model"].predict(vec)
-        else:
-            pred = st.session_state["model"].predict(pd.Series([text]))
+        label_map = {
+            0: "NEGATIF",
+            1: "NETRAL",
+            2: "POSITIF"
+        }
 
-        label = le.inverse_transform([pred[0]])[0]
-        st.success(f"📌 Hasil Sentimen: **{label.upper()}**")
+        st.success(f"📌 Hasil Sentimen: **{label_map[label]}**")
